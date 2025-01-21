@@ -5,8 +5,8 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 
-#include "stbi_image.h"
 #include "stbi_image_write.h"
+#include "perlin.c"
 
 #define WIDTH    1024
 #define HEIGHT   1024
@@ -29,6 +29,11 @@ typedef struct {
   uint32 h;
   uint8* buf;
 } img;
+
+#define color(re,gr,bl) {.r = re, .g = gr, .b = bl}
+#define lerp(v,min,max) (min + v * (max - min))
+#define lerpf(v,min,max) (((float) min) + v * (((float) max) - ((float) min)))
+#define relto(v, min, max) ((v - min) / (max - min))
 
 img allocImage(uint32 w, uint32 h) {
   uint64 memsize = CHANNELS * w * h;
@@ -137,18 +142,77 @@ void setc(color24* out, uint8 v) {
   out->b = v;
 }
 
-void testshader(img image, int32 x, int32 y, color24* out) {
-  int32 cdistx = (image.w / 2) - x;
-  int32 cdisty = (image.h / 2) - y;
+void colorMult(color24* dest, float mod) {
+  dest->r = (uint8) dest->r * mod;
+  dest->g = (uint8) dest->g * mod;
+  dest->b = (uint8) dest->b * mod;
+}
 
-  int32 cidst = sqrt((cdistx * cdistx) + (cdisty * cdisty));
+#define MAX_COLOR_COMPONENT 255
+#define TERRAIN_COLOR ((MAX_COLOR_COMPONENT / 3) * 2)
+#define SEALEVEL 0.33
+#define MTNLEVEL 0.7
 
-  if (cidst % 40 == 0) {
-    setc(out, 255);
+#define TERRAIN_COLORS 3
+static const color24 terrainColors[TERRAIN_COLORS] = {
+  color(0, TERRAIN_COLOR, 0),
+  color(TERRAIN_COLOR, TERRAIN_COLOR, 0),
+  color(TERRAIN_COLOR, TERRAIN_COLOR, TERRAIN_COLOR)
+};
+
+#define USESMARTLERP 0
+
+void lerpcolors(color24* out, color24* arr, uint32 count, float t) {
+  if (!USESMARTLERP) {
+    uint32 idx = count * t;
+    *out = arr[idx];
     return;
   }
 
-  setc(out, 0);
+  uint32 maxi = count - 1;
+  uint32 fidx = t * maxi;
+  float firststep = (float) fidx / maxi;
+  float localstep = (t - firststep) * maxi;
+
+  color24 c1 = arr[fidx];
+  color24 c2 = arr[fidx + 1];
+
+  out->r = lerpf(localstep, c1.r, c2.r);
+  out->g = lerpf(localstep, c1.g, c2.g);
+  out->b = lerpf(localstep, c1.b, c2.b);
+}
+
+float minNoise = 100.0f;
+float maxNoise = -100.0f;
+
+void testshader(img image, int32 x, int32 y, color24* out) {
+  double noisex = x * 0.15;
+  double noisey = y * 0.15;
+
+  float noise = (perlin2d(noisex, noisey, 0.2, 4));
+
+  if (noise < minNoise) {
+    minNoise = noise;
+  }
+  if (noise > maxNoise) {
+    maxNoise = noise;
+  }
+  
+  noise = relto(noise, SEALEVEL, 1.0f);
+  lerpcolors(out, terrainColors, TERRAIN_COLORS, noise);
+
+  // if (noise < SEALEVEL) {
+  //   out->r = 0;
+  //   out->g = 0;
+  //   out->b = TERRAIN_COLOR;
+  //   noise = 1 - noise;
+  // } else if (noise > MTNLEVEL) {
+  //   setc(out, TERRAIN_COLOR);
+  // } else {
+  //   out->r = 0;
+  //   out->g = TERRAIN_COLOR;
+  //   out->b = 0;
+  // }
 }
 
 int32 main() {
@@ -158,10 +222,18 @@ int32 main() {
 
   applyshader(image, testshader);
 
-  drawline(image, c, 0, 0, WIDTH, HEIGHT);
-  drawline(image, c, WIDTH, 0, 0, HEIGHT);
+  // drawline(image, c, 0, 0, WIDTH, HEIGHT);
+  // drawline(image, c, WIDTH, 0, 0, HEIGHT);
 
   int32 result = stbi_write_png("testfile.png", WIDTH, HEIGHT, CHANNELS, image.buf, WIDTH * CHANNELS);
-  printf("Wrote image! result=%i", result);
+  printf("Wrote image! result=%i\n", result);
+
+  for (uint32 i = 0; i < TERRAIN_COLORS; i++) {
+    color24 c = terrainColors[i];
+    printf("r=%i g=%i b=%i\n", c.r, c.g, c.b);
+  }
+
+  printf("minNoise=%f maxNoise=%f", minNoise, maxNoise);
+
   return 0;
 }
